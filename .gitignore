@@ -2,3 +2,4 @@
 !download_video.cc
 !CMakeLists.txt
 !.gitignore
+!build/config.json
