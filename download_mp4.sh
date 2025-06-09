@@ -53,16 +53,28 @@ download_with_resume() {
                  "$url"
         fi
 
-        if [ $? -eq 0 ]; then
-            final_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
-            if [ -n "${total_size}" ] && [ -n "${final_size}" ] && [ "${final_size}" -eq "${total_size}" ] 2>/dev/null; then
+        curl_status=$?
+        current_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
+        
+        # 新的下载完成判断逻辑
+        if [ $curl_status -eq 0 ]; then
+            if [ -n "${total_size}" ] && [ "${current_size}" -eq "${total_size}" ] 2>/dev/null; then
                 echo "Download completed successfully!"
                 return 0
+            elif [ "${current_size}" -gt 0 ] && [ "${current_size}" -eq "${start_size}" ]; then
+                echo "Download seems stuck, current size: ${current_size} bytes"
+                sleep $retry_wait
             fi
+        elif [ $curl_status -eq 18 ] && [ "${current_size}" -eq "${total_size}" ]; then
+            # curl status 18 (transfer error) but we got the full file
+            echo "Download completed successfully despite transfer error!"
+            return 0
         fi
         
         # Update start_size for next attempt
-        start_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
+        if [ "${current_size}" -gt "${start_size}" ]; then
+            start_size=$current_size
+        fi
         retry_count=$((retry_count + 1))
         
         if [ $retry_count -lt $max_retries ]; then
