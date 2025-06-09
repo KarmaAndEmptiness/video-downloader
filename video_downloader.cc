@@ -4,6 +4,7 @@
 #include <thread>
 #include <filesystem>
 #include <regex>
+#include <mutex>
 
 VideoDownloader::VideoDownloader()
 {
@@ -81,12 +82,12 @@ void VideoDownloader::setupCurlCommonOpts(CURL *curl, char *error_buffer)
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
   // 增加超时时间
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 60L);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, config_.timeout_seconds ? config_.timeout_seconds : 60L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, config_.timeout_seconds);
 
   // 其他连接选项
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-  curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+  // curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
   curl_easy_setopt(curl, CURLOPT_FAILONERROR, 0L);
   curl_easy_setopt(curl, CURLOPT_TCP_FASTOPEN, 1L);
 
@@ -192,8 +193,8 @@ bool VideoDownloader::downloadSegment(const std::string &url, const std::string 
 
           if (retry < config_.retry_count - 1)
           {
-            std::cout << "Retrying in 1 second..." << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::cout << "Retrying in 3  second..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(3));
           }
         }
       }
@@ -285,21 +286,24 @@ bool VideoDownloader::downloadM3U8(const std::string &url, const std::string &ou
     return false;
   }
 
-  // Download segments
-  std::vector<std::string> segment_files;
+  // Prepare download tasks
+  std::vector<DownloadTask> tasks;
   size_t segment_index = 0;
+  std::vector<std::string> segment_files;
 
   for (const auto &segment_url : segments)
   {
     std::string segment_path = config_.download_path + "segment_" +
-                               std::to_string(segment_index++) + ".ts";
+                               std::to_string(segment_index) + ".ts";
     segment_files.push_back(segment_path);
+    tasks.push_back({segment_url, segment_path, segment_index++});
+  }
 
-    if (!downloadSegment(segment_url, segment_path))
-    {
-      std::cerr << "Failed to download segment: " << segment_url << std::endl;
-      return false;
-    }
+  // Download segments in parallel
+  if (!processDownloadTasks(tasks))
+  {
+    std::cerr << "Failed to download segments" << std::endl;
+    return false;
   }
 
   // Merge segments
@@ -308,6 +312,74 @@ bool VideoDownloader::downloadM3U8(const std::string &url, const std::string &ou
   {
     std::cerr << "Failed to merge segments" << std::endl;
     return false;
+  }
+
+  return true;
+}
+
+void VideoDownloader::downloadSegmentsParallel(const std::vector<DownloadTask> &tasks)
+{
+  std::mutex cout_mutex;
+  auto worker = [this, &cout_mutex](const DownloadTask &task)
+  {
+    if (downloadSegment(task.url, task.output_path))
+    {
+      std::lock_guard<std::mutex> lock(cout_mutex);
+      std::cout << "Successfully downloaded segment " << task.index + 1 << std::endl;
+    }
+  };
+
+  std::vector<std::thread> threads;
+  for (const auto &task : tasks)
+  {
+    if (threads.size() >= static_cast<size_t>(config_.thread_count))
+    {
+      threads.front().join();
+      threads.erase(threads.begin());
+    }
+    threads.emplace_back(worker, task);
+  }
+
+  for (auto &thread : threads)
+  {
+    thread.join();
+  }
+}
+
+bool VideoDownloader::processDownloadTasks(std::vector<DownloadTask> &tasks)
+{
+  const size_t total_segments = tasks.size();
+  size_t processed = 0;
+  size_t batch_size = config_.thread_count;
+
+  while (processed < total_segments)
+  {
+    size_t current_batch_size = std::min(batch_size, total_segments - processed);
+    std::vector<DownloadTask> current_batch(
+        tasks.begin() + processed,
+        tasks.begin() + processed + current_batch_size);
+
+    downloadSegmentsParallel(current_batch);
+
+    // Verify all files in the batch were downloaded
+    bool batch_success = true;
+    for (const auto &task : current_batch)
+    {
+      if (!std::filesystem::exists(task.output_path))
+      {
+        std::cerr << "Failed to download segment: " << task.url << std::endl;
+        batch_success = false;
+        break;
+      }
+    }
+
+    if (!batch_success)
+    {
+      return false;
+    }
+
+    processed += current_batch_size;
+    std::cout << "Progress: " << processed << "/" << total_segments << " segments" << std::endl;
   }
 
   return true;

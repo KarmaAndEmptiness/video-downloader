@@ -44,6 +44,16 @@ private:
   void setupCurlSSL(CURL *curl);
   void setupCurlCommonOpts(CURL *curl, char *error_buffer);
 
+  struct DownloadTask
+  {
+    std::string url;
+    std::string output_path;
+    size_t index;
+  };
+
+  void downloadSegmentsParallel(const std::vector<DownloadTask> &tasks);
+  bool processDownloadTasks(std::vector<DownloadTask> &tasks);
+
   Config config_;
   std::shared_ptr<CURL> curl_;
 };
