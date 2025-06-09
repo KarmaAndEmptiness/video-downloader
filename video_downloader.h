@@ -25,6 +25,7 @@ public:
     std::string user_agent;
     ProxyConfig proxy;
     std::string url;
+    std::string baseurl;
     std::string output_name;
   };
 

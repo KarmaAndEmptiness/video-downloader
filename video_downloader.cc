@@ -39,6 +39,7 @@ bool VideoDownloader::loadConfig(const std::string &config_path)
 
     // Load video settings
     config_.url = j["video"]["url"];
+    config_.baseurl = j["video"]["baseurl"];
     config_.output_name = j["video"]["output_name"];
 
     std::filesystem::create_directories(config_.download_path);
@@ -141,7 +142,13 @@ bool VideoDownloader::parseM3U8(const std::string &content, std::vector<std::str
   {
     if (!line.empty() && line[0] != '#')
     {
-      segments.push_back(line);
+      if (config_.baseurl.empty())
+        segments.push_back(line);
+      else
+      {
+
+        segments.push_back(config_.baseurl + line);
+      }
     }
   }
   return !segments.empty();
