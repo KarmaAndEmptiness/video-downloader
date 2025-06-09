@@ -1,0 +1,69 @@
+#!/bin/bash
+
+url="$1"
+output_file="${2:-output.mp4}"
+proxy="socks5://192.168.65.157:10808"
+max_retries=5
+retry_wait=3
+
+download_with_resume() {
+    local retry_count=0
+    local start_size=0
+    
+    # Check if file exists and get its size
+    if [ -f "$output_file" ]; then
+        start_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
+        echo "Existing file found, size: $start_size bytes"
+    fi
+    
+    while [ $retry_count -lt $max_retries ]; do
+        echo "Attempting download (attempt $((retry_count + 1)) of $max_retries)..."
+        
+        # Get total file size first
+        total_size=$(curl -sI -x "$proxy" "$url" | grep -i content-length | awk '{print $2}' | tr -d '\r')
+        
+        if [ -n "$total_size" ] && [ $start_size -eq $total_size ]; then
+            echo "File already completely downloaded"
+            return 0
+        fi
+        
+        echo "Total file size: $total_size bytes"
+        echo "Resuming from: $start_size bytes"
+        
+        curl -x "$proxy" \
+             -C $start_size \
+             -L \
+             --retry 3 \
+             --retry-delay 2 \
+             --connect-timeout 10 \
+             -o "$output_file" \
+             "$url"
+        
+        if [ $? -eq 0 ]; then
+            final_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
+            if [ "$final_size" -eq "$total_size" ]; then
+                echo "Download completed successfully!"
+                return 0
+            fi
+        fi
+        
+        # Update start_size for next attempt
+        start_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
+        retry_count=$((retry_count + 1))
+        
+        if [ $retry_count -lt $max_retries ]; then
+            echo "Download interrupted at $start_size bytes, waiting $retry_wait seconds before retrying..."
+            sleep $retry_wait
+        fi
+    done
+    
+    echo "Failed to download after $max_retries attempts"
+    return 1
+}
+
+if [ -z "$1" ]; then
+    echo "Usage: $0 <url> [output_file]"
+    exit 1
+fi
+
+download_with_resume "$url" "$output_file"
