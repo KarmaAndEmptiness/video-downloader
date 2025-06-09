@@ -1,17 +1,18 @@
 {
     "download_path": "./downloads/",
     "log_path": "./download.log",
-    "thread_count": 2,
+    "thread_count": 8,
     "timeout_seconds": 60,
-    "retry_count": 10,
+    "retry_count": 100,
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
     "proxy": {
         "enabled": true,
-        "type": "socks5",
+        "type": "http",
         "host": "192.168.65.157",
-        "port": 10808
+        "port": 10809
     },
     "video": {
+        "baseurl":"",
         "url": "",
         "output_name": "output_video"
     }

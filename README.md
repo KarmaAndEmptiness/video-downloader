@@ -26,6 +26,8 @@
     "port": 10809
   },
   "video": {
+    //配置segments的baseurl
+    "baseurl": "",
     //m3u8文件地址
     "url": "",
     "output_name": "output_video"
