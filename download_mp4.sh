@@ -3,7 +3,7 @@
 url="$1"
 output_file="${2:-output.mp4}"
 proxy="socks5://192.168.65.157:10808"
-max_retries=5
+max_retries=100
 retry_wait=3
 
 download_with_resume() {
@@ -13,7 +13,12 @@ download_with_resume() {
     # Check if file exists and get its size
     if [ -f "$output_file" ]; then
         start_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
+        if [ -z "${start_size}" ] || ! [ "${start_size}" -eq "${start_size}" ] 2>/dev/null; then
+            start_size=0
+        fi
         echo "Existing file found, size: $start_size bytes"
+    else
+        echo "Starting new download"
     fi
     
     while [ $retry_count -lt $max_retries ]; do
@@ -22,26 +27,35 @@ download_with_resume() {
         # Get total file size first
         total_size=$(curl -sI -x "$proxy" "$url" | grep -i content-length | awk '{print $2}' | tr -d '\r')
         
-        if [ -n "$total_size" ] && [ $start_size -eq $total_size ]; then
+        if [ -n "${total_size}" ] && [ "${start_size}" -eq "${total_size}" ] 2>/dev/null; then
             echo "File already completely downloaded"
             return 0
         fi
-        
-        echo "Total file size: $total_size bytes"
-        echo "Resuming from: $start_size bytes"
-        
-        curl -x "$proxy" \
-             -C $start_size \
-             -L \
-             --retry 3 \
-             --retry-delay 2 \
-             --connect-timeout 10 \
-             -o "$output_file" \
-             "$url"
-        
+
+        if [ $start_size -eq 0 ]; then
+            # If starting from 0, don't use -C option
+            curl -x "$proxy" \
+                 -L \
+                 --retry 3 \
+                 --retry-delay 2 \
+                 --connect-timeout 10 \
+                 -o "$output_file" \
+                 "$url"
+        else
+            # Only use -C when we have a valid start_size
+            curl -x "$proxy" \
+                 -C $start_size \
+                 -L \
+                 --retry 3 \
+                 --retry-delay 2 \
+                 --connect-timeout 10 \
+                 -o "$output_file" \
+                 "$url"
+        fi
+
         if [ $? -eq 0 ]; then
             final_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
-            if [ "$final_size" -eq "$total_size" ]; then
+            if [ -n "${total_size}" ] && [ -n "${final_size}" ] && [ "${final_size}" -eq "${total_size}" ] 2>/dev/null; then
                 echo "Download completed successfully!"
                 return 0
             fi
