@@ -138,20 +138,60 @@ bool VideoDownloader::parseM3U8(const std::string &content, std::vector<std::str
 {
   std::istringstream stream(content);
   std::string line;
+  bool isValidM3U8 = false;
+
+  // Check if file starts with #EXTM3U
+  if (std::getline(stream, line))
+  {
+    if (line.find("#EXTM3U") == std::string::npos)
+    {
+      return false;
+    }
+    isValidM3U8 = true;
+  }
+
   while (std::getline(stream, line))
   {
-    if (!line.empty() && line[0] != '#')
+    // Trim whitespace
+    line.erase(0, line.find_first_not_of(" \t\r\n"));
+    line.erase(line.find_last_not_of(" \t\r\n") + 1);
+
+    if (line.empty())
+      continue;
+
+    // Skip comments and tags we don't handle
+    if (line[0] == '#')
     {
-      if (config_.baseurl.empty())
-        segments.push_back(line);
+      // Could handle duration tags (#EXTINF) here if needed
+      continue;
+    }
+
+    // Handle segment URL
+    if (line.find("://") != std::string::npos)
+    {
+      // Absolute URL
+      segments.push_back(line);
+    }
+    else
+    {
+      // Relative URL
+      if (!config_.baseurl.empty())
+      {
+        // Remove leading slash if base URL ends with slash
+        if (!config_.baseurl.empty() && config_.baseurl.back() == '/' && !line.empty() && line[0] == '/')
+        {
+          line = line.substr(1);
+        }
+        segments.push_back(config_.baseurl + line);
+      }
       else
       {
-
-        segments.push_back(config_.baseurl + line);
+        segments.push_back(line);
       }
     }
   }
-  return !segments.empty();
+
+  return isValidM3U8 && !segments.empty();
 }
 
 bool VideoDownloader::downloadSegment(const std::string &url, const std::string &output_path)
@@ -325,51 +365,56 @@ bool VideoDownloader::downloadM3U8(const std::string &url, const std::string &ou
 }
 bool VideoDownloader::loadM3U8FromFile(const std::string &file_path, const std::string &output_name)
 {
-    // 读取M3U8文件内容
-    std::ifstream file(file_path);
-    if (!file.is_open()) {
-        std::cerr << "Failed to open M3U8 file: " << file_path << std::endl;
-        return false;
-    }
-    
-    std::string m3u8_content((std::istreambuf_iterator<char>(file)), 
-                             std::istreambuf_iterator<char>());
-    file.close();
+  // 读取M3U8文件内容
+  std::ifstream file(file_path);
+  if (!file.is_open())
+  {
+    std::cerr << "Failed to open M3U8 file: " << file_path << std::endl;
+    return false;
+  }
 
-    // 解析M3U8内容
-    std::vector<std::string> segments;
-    if (!parseM3U8(m3u8_content, segments)) {
-        std::cerr << "Failed to parse M3U8 content from file" << std::endl;
-        return false;
-    }
+  std::string m3u8_content((std::istreambuf_iterator<char>(file)),
+                           std::istreambuf_iterator<char>());
+  file.close();
 
-    // 准备下载任务
-    std::vector<DownloadTask> tasks;
-    size_t segment_index = 0;
-    std::vector<std::string> segment_files;
+  // 解析M3U8内容
+  std::vector<std::string> segments;
+  if (!parseM3U8(m3u8_content, segments))
+  {
+    std::cerr << "Failed to parse M3U8 content from file" << std::endl;
+    return false;
+  }
 
-    for (const auto &segment_url : segments) {
-        std::string segment_path = config_.download_path + "segment_" +
-                                   std::to_string(segment_index) + ".ts";
-        segment_files.push_back(segment_path);
-        tasks.push_back({segment_url, segment_path, segment_index++});
-    }
+  // 准备下载任务
+  std::vector<DownloadTask> tasks;
+  size_t segment_index = 0;
+  std::vector<std::string> segment_files;
 
-    // 下载所有片段
-    if (!processDownloadTasks(tasks)) {
-        std::cerr << "Failed to download segments" << std::endl;
-        return false;
-    }
+  for (const auto &segment_url : segments)
+  {
+    std::string segment_path = config_.download_path + "segment_" +
+                               std::to_string(segment_index) + ".ts";
+    segment_files.push_back(segment_path);
+    tasks.push_back({segment_url, segment_path, segment_index++});
+  }
 
-    // 合并片段
-    std::string output_path = config_.download_path + output_name + ".ts";
-    if (!mergeSegments(segment_files, output_path)) {
-        std::cerr << "Failed to merge segments" << std::endl;
-        return false;
-    }
+  // 下载所有片段
+  if (!processDownloadTasks(tasks))
+  {
+    std::cerr << "Failed to download segments" << std::endl;
+    return false;
+  }
 
-    std::cout << "Successfully downloaded and merged video to: " << output_path << std::endl;
-    return true;
+  // 合并片段
+  std::string output_path = config_.download_path + output_name + ".ts";
+  if (!mergeSegments(segment_files, output_path))
+  {
+    std::cerr << "Failed to merge segments" << std::endl;
+    return false;
+  }
+
+  std::cout << "Successfully downloaded and merged video to: " << output_path << std::endl;
+  return true;
 }
 void VideoDownloader::downloadSegmentsParallel(const std::vector<DownloadTask> &tasks)
 {
