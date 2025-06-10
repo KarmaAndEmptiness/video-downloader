@@ -34,6 +34,7 @@ public:
 
   bool loadConfig(const std::string &config_path);
   bool downloadM3U8(const std::string &url, const std::string &output_name);
+  bool loadM3U8FromFile(const std::string &file_path, const std::string &output_name);
   const Config &getConfig() const { return config_; }
 
 private:
