@@ -323,7 +323,54 @@ bool VideoDownloader::downloadM3U8(const std::string &url, const std::string &ou
 
   return true;
 }
+bool VideoDownloader::loadM3U8FromFile(const std::string &file_path, const std::string &output_name)
+{
+    // 读取M3U8文件内容
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open M3U8 file: " << file_path << std::endl;
+        return false;
+    }
+    
+    std::string m3u8_content((std::istreambuf_iterator<char>(file)), 
+                             std::istreambuf_iterator<char>());
+    file.close();
 
+    // 解析M3U8内容
+    std::vector<std::string> segments;
+    if (!parseM3U8(m3u8_content, segments)) {
+        std::cerr << "Failed to parse M3U8 content from file" << std::endl;
+        return false;
+    }
+
+    // 准备下载任务
+    std::vector<DownloadTask> tasks;
+    size_t segment_index = 0;
+    std::vector<std::string> segment_files;
+
+    for (const auto &segment_url : segments) {
+        std::string segment_path = config_.download_path + "segment_" +
+                                   std::to_string(segment_index) + ".ts";
+        segment_files.push_back(segment_path);
+        tasks.push_back({segment_url, segment_path, segment_index++});
+    }
+
+    // 下载所有片段
+    if (!processDownloadTasks(tasks)) {
+        std::cerr << "Failed to download segments" << std::endl;
+        return false;
+    }
+
+    // 合并片段
+    std::string output_path = config_.download_path + output_name + ".ts";
+    if (!mergeSegments(segment_files, output_path)) {
+        std::cerr << "Failed to merge segments" << std::endl;
+        return false;
+    }
+
+    std::cout << "Successfully downloaded and merged video to: " << output_path << std::endl;
+    return true;
+}
 void VideoDownloader::downloadSegmentsParallel(const std::vector<DownloadTask> &tasks)
 {
   std::mutex cout_mutex;

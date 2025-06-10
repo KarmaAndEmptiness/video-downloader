@@ -35,6 +35,14 @@
 }
 ```
 
+通过 url 下载 m3u8 文件后下载：
+
 ```bash
 cd build && cmake .. && make && ./video_downloader
+```
+
+直接加载本地 m3u8 文件：
+
+```bash
+./video_downloader -f <m3u8_file_path>
 ```
