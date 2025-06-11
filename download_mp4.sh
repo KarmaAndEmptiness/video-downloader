@@ -2,7 +2,7 @@
 
 url="$1"
 output_file="${2:-output.mp4}"
-proxy="socks5://192.168.65.157:10808"
+proxy="socks5://192.168.46.198:10808"
 max_retries=100
 retry_wait=3
 
@@ -24,25 +24,35 @@ download_with_resume() {
     while [ $retry_count -lt $max_retries ]; do
         echo "Attempting download (attempt $((retry_count + 1)) of $max_retries)..."
         
-        # Get total file size first
-        total_size=$(curl -sI -x "$proxy" "$url" | grep -i content-length | awk '{print $2}' | tr -d '\r')
+        # Improved total size detection with better parsing
+        total_size=$(curl -sI -x "$proxy" "$url" | grep -i '^content-length:' | awk '{print $2}' | tr -d '\r\n' | grep -o '^[0-9]*')
+        if [ -n "$total_size" ]; then
+            echo "Debug: Detected total size: $total_size bytes"
+        else
+            echo "Warning: Could not determine total file size"
+        fi
         
-        if [ -n "${total_size}" ] && [ "${start_size}" -eq "${total_size}" ] 2>/dev/null; then
+        # Validate sizes before comparison
+        if [ -n "$total_size" ] && [ "$total_size" -eq "$total_size" ] 2>/dev/null && \
+           [ -n "$start_size" ] && [ "$start_size" -eq "$start_size" ] 2>/dev/null && \
+           [ "$start_size" -eq "$total_size" ]; then
             echo "File already completely downloaded"
             return 0
         fi
 
-        if [ $start_size -eq 0 ]; then
-            # If starting from 0, don't use -C option
+        # Download attempt with progress output
+        if [ ${start_size:-0} -eq 0 ]; then
+            echo "Starting fresh download..."
             curl -x "$proxy" \
                  -L \
                  --retry 3 \
                  --retry-delay 2 \
                  --connect-timeout 10 \
                  -o "$output_file" \
+                 -#  \
                  "$url"
         else
-            # Only use -C when we have a valid start_size
+            echo "Resuming from byte position $start_size..."
             curl -x "$proxy" \
                  -C $start_size \
                  -L \
@@ -50,35 +60,48 @@ download_with_resume() {
                  --retry-delay 2 \
                  --connect-timeout 10 \
                  -o "$output_file" \
+                 -#  \
                  "$url"
         fi
 
         curl_status=$?
-        current_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
+        echo "Debug: curl exit status: $curl_status"
         
-        # 新的下载完成判断逻辑
+        # Get current file size with better error handling
+        current_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
+        echo "Debug: Current file size: ${current_size:-0} bytes"
+        
+        # Improved completion check with better validation
         if [ $curl_status -eq 0 ]; then
-            if [ -n "${total_size}" ] && [ "${current_size}" -eq "${total_size}" ] 2>/dev/null; then
+            if [ -n "$total_size" ] && [ "$total_size" -eq "$total_size" ] 2>/dev/null && \
+               [ -n "$current_size" ] && [ "$current_size" -eq "$current_size" ] 2>/dev/null && \
+               [ "$current_size" -eq "$total_size" ]; then
                 echo "Download completed successfully!"
                 return 0
-            elif [ "${current_size}" -gt 0 ] && [ "${current_size}" -eq "${start_size}" ]; then
-                echo "Download seems stuck, current size: ${current_size} bytes"
-                sleep $retry_wait
+            elif [ -n "$current_size" ] && [ -n "$start_size" ] && \
+                 [ "$current_size" -eq "$current_size" ] 2>/dev/null && \
+                 [ "$start_size" -eq "$start_size" ] 2>/dev/null && \
+                 [ "$current_size" -eq "$start_size" ]; then
+                echo "Download seems stuck (no new data received)"
+                echo "Current size: $current_size bytes"
+                echo "Previous size: $start_size bytes"
             fi
-        elif [ $curl_status -eq 18 ] && [ "${current_size}" -eq "${total_size}" ]; then
-            # curl status 18 (transfer error) but we got the full file
+        elif [ $curl_status -eq 18 ] && [ -n "${total_size}" ] && [ ${current_size:-0} -eq ${total_size} ]; then
             echo "Download completed successfully despite transfer error!"
             return 0
+        else
+            echo "Download failed with curl status $curl_status"
         fi
         
         # Update start_size for next attempt
-        if [ "${current_size}" -gt "${start_size}" ]; then
+        if [ ${current_size:-0} -gt ${start_size:-0} ]; then
             start_size=$current_size
         fi
+        
         retry_count=$((retry_count + 1))
         
         if [ $retry_count -lt $max_retries ]; then
-            echo "Download interrupted at $start_size bytes, waiting $retry_wait seconds before retrying..."
+            echo "Download interrupted at ${start_size:-0} bytes, waiting $retry_wait seconds before retrying..."
             sleep $retry_wait
         fi
     done
