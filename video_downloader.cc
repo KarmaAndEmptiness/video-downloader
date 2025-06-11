@@ -280,6 +280,16 @@ bool VideoDownloader::mergeSegments(const std::vector<std::string> &segments, co
   return true;
 }
 
+bool VideoDownloader::isSegmentComplete(const std::string &filepath) const
+{
+  if (!std::filesystem::exists(filepath))
+  {
+    return false;
+  }
+  // 检查文件大小是否大于0
+  return std::filesystem::file_size(filepath) > 0;
+}
+
 bool VideoDownloader::downloadM3U8(const std::string &url, const std::string &output_name)
 {
   std::string m3u8_content;
@@ -343,7 +353,17 @@ bool VideoDownloader::downloadM3U8(const std::string &url, const std::string &ou
     std::string segment_path = config_.download_path + "segment_" +
                                std::to_string(segment_index) + ".ts";
     segment_files.push_back(segment_path);
-    tasks.push_back({segment_url, segment_path, segment_index++});
+
+    // 只有当片段未下载或下载不完整时才添加到任务列表
+    if (!isSegmentComplete(segment_path))
+    {
+      tasks.push_back({segment_url, segment_path, segment_index});
+    }
+    else
+    {
+      std::cout << "Segment " << segment_index + 1 << " already downloaded, skipping..." << std::endl;
+    }
+    segment_index++;
   }
 
   // Download segments in parallel
@@ -395,7 +415,17 @@ bool VideoDownloader::loadM3U8FromFile(const std::string &file_path, const std::
     std::string segment_path = config_.download_path + "segment_" +
                                std::to_string(segment_index) + ".ts";
     segment_files.push_back(segment_path);
-    tasks.push_back({segment_url, segment_path, segment_index++});
+
+    // 只有当片段未下载或下载不完整时才添加到任务列表
+    if (!isSegmentComplete(segment_path))
+    {
+      tasks.push_back({segment_url, segment_path, segment_index});
+    }
+    else
+    {
+      std::cout << "Segment " << segment_index + 1 << " already downloaded, skipping..." << std::endl;
+    }
+    segment_index++;
   }
 
   // 下载所有片段
