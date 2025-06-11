@@ -55,6 +55,7 @@ private:
 
   void downloadSegmentsParallel(const std::vector<DownloadTask> &tasks);
   bool processDownloadTasks(std::vector<DownloadTask> &tasks);
+  bool isSegmentComplete(const std::string &filepath) const;
 
   Config config_;
   std::shared_ptr<CURL> curl_;
