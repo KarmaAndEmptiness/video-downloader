@@ -38,6 +38,14 @@ public:
   const Config &getConfig() const { return config_; }
 
 private:
+  struct EncryptionInfo
+  {
+    bool enabled = false;
+    std::string method;
+    std::string key_uri;
+    std::vector<uint8_t> key_data;
+  };
+
   bool parseM3U8(const std::string &content, std::vector<std::string> &segments);
   bool downloadSegment(const std::string &url, const std::string &output_path);
   bool mergeSegments(const std::vector<std::string> &segments, const std::string &output_file);
@@ -45,6 +53,10 @@ private:
   void setupCurlProxy(CURL *curl);
   void setupCurlSSL(CURL *curl);
   void setupCurlCommonOpts(CURL *curl, char *error_buffer);
+
+  bool downloadKey(const std::string &key_url, std::vector<uint8_t> &key_data);
+  bool decryptSegment(const std::string &input_file, const std::string &output_file,
+                      const std::vector<uint8_t> &key_data);
 
   struct DownloadTask
   {
@@ -59,4 +71,5 @@ private:
 
   Config config_;
   std::shared_ptr<CURL> curl_;
+  EncryptionInfo encryption_;
 };

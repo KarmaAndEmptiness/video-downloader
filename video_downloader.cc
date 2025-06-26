@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <regex>
 #include <mutex>
+#include <openssl/evp.h>
 
 VideoDownloader::VideoDownloader()
 {
@@ -134,61 +135,147 @@ size_t VideoDownloader::WriteCallback(void *contents, size_t size, size_t nmemb,
   return size * nmemb;
 }
 
+bool VideoDownloader::downloadKey(const std::string &key_url, std::vector<uint8_t> &key_data)
+{
+  std::string key_content;
+  char error_buffer[CURL_ERROR_SIZE] = {0};
+
+  CURL *curl = curl_easy_init();
+  if (!curl)
+    return false;
+
+  curl_easy_setopt(curl, CURLOPT_URL, key_url.c_str());
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &key_content);
+
+  setupCurlCommonOpts(curl, error_buffer);
+
+  CURLcode res = curl_easy_perform(curl);
+  curl_easy_cleanup(curl);
+
+  if (res != CURLE_OK && res != CURLE_SSL_CONNECT_ERROR)
+  {
+    std::cerr << "Failed to download key: " << curl_easy_strerror(res) << std::endl;
+    return false;
+  }
+
+  key_data.assign(key_content.begin(), key_content.end());
+  return true;
+}
+
+bool VideoDownloader::decryptSegment(const std::string &input_file, const std::string &output_file,
+                                     const std::vector<uint8_t> &key_data)
+{
+  std::ifstream in(input_file, std::ios::binary);
+  std::ofstream out(output_file, std::ios::binary);
+
+  if (!in || !out)
+    return false;
+
+  // Initialize OpenSSL
+  EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+  if (!ctx)
+    return false;
+
+  // Initialize decryption
+  if (!EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), nullptr,
+                          key_data.data(), nullptr))
+  {
+    EVP_CIPHER_CTX_free(ctx);
+    return false;
+  }
+
+  std::vector<unsigned char> inbuf(1024), outbuf(1024 + EVP_MAX_BLOCK_LENGTH);
+  int outlen;
+
+  // Read and decrypt
+  while (in.good())
+  {
+    in.read(reinterpret_cast<char *>(inbuf.data()), inbuf.size());
+    std::streamsize bytes_read = in.gcount();
+
+    if (bytes_read > 0)
+    {
+      if (!EVP_DecryptUpdate(ctx, outbuf.data(), &outlen,
+                             inbuf.data(), bytes_read))
+      {
+        EVP_CIPHER_CTX_free(ctx);
+        return false;
+      }
+      out.write(reinterpret_cast<char *>(outbuf.data()), outlen);
+    }
+  }
+
+  // Finalize decryption
+  if (EVP_DecryptFinal_ex(ctx, outbuf.data(), &outlen))
+    out.write(reinterpret_cast<char *>(outbuf.data()), outlen);
+
+  EVP_CIPHER_CTX_free(ctx);
+  return true;
+}
+
 bool VideoDownloader::parseM3U8(const std::string &content, std::vector<std::string> &segments)
 {
   std::istringstream stream(content);
   std::string line;
   bool isValidM3U8 = false;
 
-  // Check if file starts with #EXTM3U
+  // Reset encryption info
+  encryption_ = EncryptionInfo();
+
   if (std::getline(stream, line))
   {
     if (line.find("#EXTM3U") == std::string::npos)
-    {
       return false;
-    }
     isValidM3U8 = true;
   }
 
   while (std::getline(stream, line))
   {
-    // Trim whitespace
     line.erase(0, line.find_first_not_of(" \t\r\n"));
     line.erase(line.find_last_not_of(" \t\r\n") + 1);
 
     if (line.empty())
       continue;
 
-    // Skip comments and tags we don't handle
     if (line[0] == '#')
     {
-      // Could handle duration tags (#EXTINF) here if needed
+      // Handle encryption key
+      if (line.find("#EXT-X-KEY:") != std::string::npos)
+      {
+        encryption_.enabled = true;
+
+        // Parse encryption method
+        size_t method_start = line.find("METHOD=") + 7;
+        size_t method_end = line.find(",", method_start);
+        encryption_.method = line.substr(method_start, method_end - method_start);
+
+        // Parse key URI
+        size_t uri_start = line.find("URI=\"") + 5;
+        size_t uri_end = line.find("\"", uri_start);
+        encryption_.key_uri = line.substr(uri_start, uri_end - uri_start);
+
+        // Download key
+        if (!downloadKey(encryption_.key_uri, encryption_.key_data))
+        {
+          std::cerr << "Failed to download decryption key" << std::endl;
+          return false;
+        }
+      }
       continue;
     }
 
-    // Handle segment URL
+    // Handle segment URL (same as before)
     if (line.find("://") != std::string::npos)
-    {
-      // Absolute URL
       segments.push_back(line);
+    else if (!config_.baseurl.empty())
+    {
+      if (!config_.baseurl.empty() && config_.baseurl.back() == '/' && !line.empty() && line[0] == '/')
+        line = line.substr(1);
+      segments.push_back(config_.baseurl + line);
     }
     else
-    {
-      // Relative URL
-      if (!config_.baseurl.empty())
-      {
-        // Remove leading slash if base URL ends with slash
-        if (!config_.baseurl.empty() && config_.baseurl.back() == '/' && !line.empty() && line[0] == '/')
-        {
-          line = line.substr(1);
-        }
-        segments.push_back(config_.baseurl + line);
-      }
-      else
-      {
-        segments.push_back(line);
-      }
-    }
+      segments.push_back(line);
   }
 
   return isValidM3U8 && !segments.empty();
@@ -199,63 +286,61 @@ bool VideoDownloader::downloadSegment(const std::string &url, const std::string 
   for (int retry = 0; retry < config_.retry_count; ++retry)
   {
     CURL *curl = curl_easy_init();
-    if (curl)
+    if (!curl)
+      continue;
+
+    std::string temp_path = output_path + ".temp";
+    FILE *fp = fopen(temp_path.c_str(), "wb");
+    if (!fp)
     {
-      FILE *fp = fopen(output_path.c_str(), "wb");
-      if (fp)
+      curl_easy_cleanup(curl);
+      continue;
+    }
+
+    char error_buffer[CURL_ERROR_SIZE] = {0};
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fwrite);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+    setupCurlCommonOpts(curl, error_buffer);
+
+    CURLcode res = curl_easy_perform(curl);
+    long response_code;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+
+    fclose(fp);
+    curl_easy_cleanup(curl);
+
+    if ((res == CURLE_OK || res == CURLE_SSL_CONNECT_ERROR) && response_code == 200)
+    {
+      if (encryption_.enabled)
       {
-        char error_buffer[CURL_ERROR_SIZE] = {0};
-
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fwrite);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
-
-        setupCurlCommonOpts(curl, error_buffer);
-
-        // Perform request
-        CURLcode res = curl_easy_perform(curl);
-
-        // Get response code
-        long response_code;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
-
-        fclose(fp);
-        curl_easy_cleanup(curl);
-
-        if ((res == CURLE_OK || res == CURLE_SSL_CONNECT_ERROR) && response_code == 200)
+        if (!decryptSegment(temp_path, output_path, encryption_.key_data))
         {
-          std::cout << "Successfully downloaded segment: " << url << std::endl;
-          return true;
+          std::cerr << "Failed to decrypt segment: " << url << std::endl;
+          std::filesystem::remove(temp_path);
+          continue;
         }
-        else
-        {
-          std::cerr << "Failed to download segment: " << url
-                    << " (Attempt " << (retry + 1) << "/" << config_.retry_count << ")" << std::endl;
-          std::cerr << "Error: " << curl_easy_strerror(res) << std::endl;
-          std::cerr << "Detailed error: " << error_buffer << std::endl;
-          std::cerr << "HTTP response code: " << response_code << std::endl;
-
-          // Remove failed download file
-          std::filesystem::remove(output_path);
-
-          if (retry < config_.retry_count - 1)
-          {
-            std::cout << "Retrying in 3  second..." << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(3));
-          }
-        }
+        std::filesystem::remove(temp_path);
       }
       else
       {
-        std::cerr << "Failed to open file for writing: " << output_path << std::endl;
-        curl_easy_cleanup(curl);
-        return false;
+        std::filesystem::rename(temp_path, output_path);
       }
+      return true;
     }
-    else
+
+    std::cerr << "Failed to download segment: " << url
+              << " (Attempt " << (retry + 1) << "/" << config_.retry_count << ")" << std::endl;
+    std::cerr << "Error: " << curl_easy_strerror(res) << std::endl;
+    std::cerr << "Detailed error: " << error_buffer << std::endl;
+    std::cerr << "HTTP response code: " << response_code << std::endl;
+
+    std::filesystem::remove(temp_path);
+
+    if (retry < config_.retry_count - 1)
     {
-      std::cerr << "Failed to initialize CURL" << std::endl;
-      return false;
+      std::cout << "Retrying in 3 second..." << std::endl;
+      std::this_thread::sleep_for(std::chrono::seconds(3));
     }
   }
   return false;
@@ -454,7 +539,7 @@ void VideoDownloader::downloadSegmentsParallel(const std::vector<DownloadTask> &
     if (downloadSegment(task.url, task.output_path))
     {
       std::lock_guard<std::mutex> lock(cout_mutex);
-      std::cout << "Successfully downloaded segment " << task.index + 1 << std::endl;
+      std::cout << "Successfully downloaded segment " << task.index + 1 << ":" << task.url << std::endl;
     }
   };
 
