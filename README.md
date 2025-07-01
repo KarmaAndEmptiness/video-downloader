@@ -28,6 +28,8 @@
   "video": {
     //配置segments的baseurl
     "baseurl": "",
+    //配置key文件uri的baseurl
+    "key_baseurl": "",
     //m3u8文件地址
     "url": "",
     "output_name": "output_video"

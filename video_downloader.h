@@ -27,6 +27,7 @@ public:
     std::string url;
     std::string baseurl;
     std::string output_name;
+    std::string key_baseurl; // Add this field
   };
 
   VideoDownloader();

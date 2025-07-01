@@ -41,6 +41,7 @@ bool VideoDownloader::loadConfig(const std::string &config_path)
     // Load video settings
     config_.url = j["video"]["url"];
     config_.baseurl = j["video"]["baseurl"];
+    config_.key_baseurl = j["video"]["key_baseurl"];
     config_.output_name = j["video"]["output_name"];
 
     std::filesystem::create_directories(config_.download_path);
@@ -253,7 +254,25 @@ bool VideoDownloader::parseM3U8(const std::string &content, std::vector<std::str
         // Parse key URI
         size_t uri_start = line.find("URI=\"") + 5;
         size_t uri_end = line.find("\"", uri_start);
-        encryption_.key_uri = line.substr(uri_start, uri_end - uri_start);
+        std::string key_uri = line.substr(uri_start, uri_end - uri_start);
+
+        // Handle relative key URI
+        if (key_uri[0] == '/' && !config_.key_baseurl.empty())
+        {
+          // Remove trailing slash from key_baseurl if present
+          std::string base = config_.key_baseurl;
+          if (!base.empty() && base.back() == '/' && key_uri[0] == '/')
+          {
+            base.pop_back();
+          }
+          encryption_.key_uri = base + key_uri;
+        }
+        else
+        {
+          encryption_.key_uri = key_uri;
+        }
+
+        std::cout << "Using key URL: " << encryption_.key_uri << std::endl;
 
         // Download key
         if (!downloadKey(encryption_.key_uri, encryption_.key_data))
