@@ -220,6 +220,7 @@ bool VideoDownloader::parseM3U8(const std::string &content, std::vector<std::str
   std::istringstream stream(content);
   std::string line;
   bool isValidM3U8 = false;
+  bool inDiscontinuitySection = false;
 
   // Reset encryption info
   encryption_ = EncryptionInfo();
@@ -241,6 +242,13 @@ bool VideoDownloader::parseM3U8(const std::string &content, std::vector<std::str
 
     if (line[0] == '#')
     {
+      // Handle EXT-X-DISCONTINUITY tags
+      if (line.find("#EXT-X-DISCONTINUITY") != std::string::npos)
+      {
+        inDiscontinuitySection = !inDiscontinuitySection;
+        continue;
+      }
+
       // Handle encryption key
       if (line.find("#EXT-X-KEY:") != std::string::npos)
       {
@@ -284,17 +292,24 @@ bool VideoDownloader::parseM3U8(const std::string &content, std::vector<std::str
       continue;
     }
 
-    // Handle segment URL (same as before)
+    // Handle segment URL
+    std::string segment_url;
     if (line.find("://") != std::string::npos)
-      segments.push_back(line);
+      segment_url = line;
     else if (!config_.baseurl.empty())
     {
       if (!config_.baseurl.empty() && config_.baseurl.back() == '/' && !line.empty() && line[0] == '/')
         line = line.substr(1);
-      segments.push_back(config_.baseurl + line);
+      segment_url = config_.baseurl + line;
     }
     else
-      segments.push_back(line);
+      segment_url = line;
+
+    // Only add segments that are not in discontinuity sections
+    if (!inDiscontinuitySection)
+    {
+      segments.push_back(segment_url);
+    }
   }
 
   return isValidM3U8 && !segments.empty();
