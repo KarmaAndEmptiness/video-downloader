@@ -37,14 +37,32 @@
 }
 ```
 
-通过 url 下载 m3u8 文件后下载：
+从配置文件下载并合并（默认）
 
 ```bash
-cd build && cmake .. && make && ./video_downloader
+./video_downloader
 ```
 
-直接加载本地 m3u8 文件：
+从本地 m3u8 文件下载并合并
 
 ```bash
 ./video_downloader -f <m3u8_file_path>
+```
+
+仅下载片段，不合并
+
+```bash
+./video_downloader --download-only
+```
+
+从本地 m3u8 文件仅下载片段
+
+```bash
+./video_downloader --download-only -f <m3u8_file_path>
+```
+
+仅合并已下载的片段
+
+```bash
+./video_downloader --merge-only
 ```

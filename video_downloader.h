@@ -38,6 +38,10 @@ public:
   bool loadM3U8FromFile(const std::string &file_path, const std::string &output_name);
   const Config &getConfig() const { return config_; }
 
+  // 新增的公共方法
+  bool downloadOnly(const std::string &url_or_file, bool is_file = false);
+  bool mergeOnly(const std::string &output_name);
+
 private:
   struct EncryptionInfo
   {
