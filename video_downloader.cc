@@ -617,3 +617,130 @@ bool VideoDownloader::processDownloadTasks(std::vector<DownloadTask> &tasks)
 
   return true;
 }
+
+bool VideoDownloader::downloadOnly(const std::string &url_or_file, bool is_file)
+{
+  std::string m3u8_content;
+
+  if (is_file)
+  {
+    std::ifstream file(url_or_file);
+    if (!file.is_open())
+    {
+      std::cerr << "Failed to open M3U8 file: " << url_or_file << std::endl;
+      return false;
+    }
+    m3u8_content = std::string((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+    file.close();
+  }
+  else
+  {
+    // 下载M3U8文件
+    char error_buffer[CURL_ERROR_SIZE] = {0};
+    CURL *curl = curl_easy_init();
+    if (!curl)
+      return false;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url_or_file.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &m3u8_content);
+    setupCurlCommonOpts(curl, error_buffer);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK && res != CURLE_SSL_CONNECT_ERROR)
+    {
+      std::cerr << "Failed to download M3U8 file" << std::endl;
+      return false;
+    }
+  }
+
+  // 解析M3U8
+  std::vector<std::string> segments;
+  if (!parseM3U8(m3u8_content, segments))
+  {
+    std::cerr << "Failed to parse M3U8 content" << std::endl;
+    return false;
+  }
+
+  // 准备下载任务
+  std::vector<DownloadTask> tasks;
+  size_t segment_index = 0;
+
+  for (const auto &segment_url : segments)
+  {
+    std::string segment_path = config_.download_path + "segment_" +
+                               std::to_string(segment_index) + ".ts";
+    if (!isSegmentComplete(segment_path))
+    {
+      tasks.push_back({segment_url, segment_path, segment_index});
+    }
+    segment_index++;
+  }
+
+  return processDownloadTasks(tasks);
+}
+
+bool VideoDownloader::mergeOnly(const std::string &output_name)
+{
+  // 扫描下载目录中的所有片段
+  std::vector<std::string> segment_files;
+  std::string pattern = "segment_";
+  std::string extension = ".ts";
+
+  try
+  {
+    for (const auto &entry : std::filesystem::directory_iterator(config_.download_path))
+    {
+      std::string filename = entry.path().filename().string();
+      // 检查文件是否以pattern开头且以.ts结尾
+      if (filename.find(pattern) == 0 &&
+          filename.length() > extension.length() &&
+          filename.compare(filename.length() - extension.length(), extension.length(), extension) == 0)
+      {
+        segment_files.push_back(entry.path().string());
+      }
+    }
+  }
+  catch (const std::filesystem::filesystem_error &e)
+  {
+    std::cerr << "Error scanning directory: " << e.what() << std::endl;
+    return false;
+  }
+
+  if (segment_files.empty())
+  {
+    std::cerr << "No segments found in directory: " << config_.download_path << std::endl;
+    return false;
+  }
+
+  // 对片段进行排序，确保按正确顺序合并
+  std::sort(segment_files.begin(), segment_files.end(),
+            [&pattern](const std::string &a, const std::string &b)
+            {
+              // 提取segment_X.ts中的X号码进行比较
+              auto get_number = [&pattern](const std::string &filename)
+              {
+                size_t start = pattern.length();
+                size_t end = filename.find(".ts");
+                return std::stoi(filename.substr(start, end - start));
+              };
+
+              return get_number(std::filesystem::path(a).filename().string()) <
+                     get_number(std::filesystem::path(b).filename().string());
+            });
+
+  std::cout << "Found " << segment_files.size() << " segments to merge" << std::endl;
+
+  std::string output_path = config_.download_path + output_name + ".ts";
+  bool success = mergeSegments(segment_files, output_path);
+
+  if (success)
+  {
+    std::cout << "Successfully merged segments to: " << output_path << std::endl;
+  }
+
+  return success;
+}
